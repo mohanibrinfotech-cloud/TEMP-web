@@ -2,6 +2,7 @@ import axios from "axios";
 import React, { useState } from "react";
 import toast from "react-hot-toast";
 import AiAgent from "../components/AiAgent";
+import LatestUpdatesSection from "../components/LatestUpdates";
 
 export default function Home() {
   // State to manage form data
@@ -264,6 +265,7 @@ export default function Home() {
             </div>
           </div>
         </section>
+         <LatestUpdatesSection />
       </main>
     </div>
   );
