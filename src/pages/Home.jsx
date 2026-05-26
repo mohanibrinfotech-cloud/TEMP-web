@@ -1,6 +1,7 @@
 import axios from "axios";
 import React, { useState } from "react";
 import toast from "react-hot-toast";
+import AiAgent from "../components/AiAgent";
 
 export default function Home() {
   // State to manage form data
@@ -45,6 +46,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans antialiased scroll-smooth">
+       <AiAgent />
       {/* 1. HEADER / NAVIGATION */}
       <header className="bg-white/80 backdrop-blur-md border-b border-slate-200 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
