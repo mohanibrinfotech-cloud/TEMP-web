@@ -1,11 +1,10 @@
 import axios from "axios";
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
-import AiAgent from "../components/AiAgent";
-import LatestUpdatesSection from "../components/LatestUpdates";
+import AIAgent from "../components/AiAgent";
+import LatestUpdates from "../components/LatestUpdates";
 
 export default function Home() {
-  // State to manage form data
   const [formData, setFormData] = useState({
     name: "",
     mobile: "",
@@ -13,65 +12,101 @@ export default function Home() {
     message: "",
   });
 
+  // ✅ FIX 1: Store the token in a ref so it persists across re-renders
+  //    without triggering unnecessary re-renders itself.
+  const captchaTokenRef = useRef("");
+  const turnstileWidgetRef = useRef(null);
+
+  // ✅ FIX 2: Use useEffect to render Turnstile AFTER the component mounts,
+  //    not in window.onload (which fires before React even runs).
+  useEffect(() => {
+    const renderTurnstile = () => {
+      if (window.turnstile && turnstileWidgetRef.current) {
+        window.turnstile.render(turnstileWidgetRef.current, {
+          sitekey: import.meta.env.VITE_SITE_KEY, // ✅ Vite env vars need VITE_ prefix
+          callback: (token) => {
+            captchaTokenRef.current = token;
+            console.log("Turnstile token received:", token);
+          },
+          "expired-callback": () => {
+            // Token expires after ~5 min — clear it so user must re-verify
+            captchaTokenRef.current = "";
+            console.warn("Turnstile token expired");
+          },
+          "error-callback": () => {
+            captchaTokenRef.current = "";
+            toast.error("Captcha failed. Please try again.");
+          },
+        });
+      }
+    };
+
+    // If the Turnstile script has already loaded, render immediately.
+    // Otherwise wait for it to load.
+    if (window.turnstile) {
+      renderTurnstile();
+    } else {
+      window.onTurnstileLoad = renderTurnstile; // set in the script tag's onload
+    }
+  }, []);
+
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
+    // ✅ FIX 3: Read from the ref, not the reset-on-render plain variable
+    const token = captchaTokenRef.current;
+
+    if (!token) {
+      toast.error("Please complete the captcha before submitting.");
+      return;
+    }
+
     try {
-      const { data } = await axios.post("/api/contact", formData);
+      const { data } = await axios.post("/api/contact", {
+        ...formData,
+        token,
+      });
 
       if (data.success) {
         toast.success("Message sent successfully!");
+        setFormData({ name: "", mobile: "", email: "", message: "" });
 
-        setFormData({
-          name: "",
-          mobile: "",
-          email: "",
-          message: "",
-        });
+        // Reset Turnstile after a successful submission
+        if (window.turnstile && turnstileWidgetRef.current) {
+          window.turnstile.reset(turnstileWidgetRef.current);
+          captchaTokenRef.current = "";
+        }
       } else {
         toast.error(data.message || "Failed to send message.");
       }
     } catch (error) {
       console.error(error);
-
       toast.error(
         error?.response?.data?.message ||
-          "An error occurred. Please try again later.",
+          "An error occurred. Please try again later."
       );
     }
   };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans antialiased scroll-smooth">
-       <AiAgent />
+      <AIAgent />
+
       {/* 1. HEADER / NAVIGATION */}
       <header className="bg-white/80 backdrop-blur-md border-b border-slate-200 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
-            <div className="flex-shrink-0 flex items-center">
-              {/* <span className="text-2xl font-black tracking-tight text-indigo-600">Brand<span className="text-slate-900">Name</span></span> */}
-            </div>
+            <div className="flex-shrink-0 flex items-center" />
 
             <nav className="hidden md:flex space-x-8 text-sm font-medium text-slate-600">
-              <a href="#" className="text-indigo-600 px-1 pt-1">
-                Home
-              </a>
-              <a
-                href="#features"
-                className="hover:text-slate-900 px-1 pt-1 transition-colors"
-              >
-                Features
-              </a>
-              <a
-                href="#contact"
-                className="hover:text-slate-900 px-1 pt-1 transition-colors"
-              >
-                Contact Us
-              </a>
+              <a href="#" className="text-indigo-600 px-1 pt-1">Home</a>
+              <a href="#features" className="hover:text-slate-900 px-1 pt-1 transition-colors">Features</a>
+              <a href="#contact" className="hover:text-slate-900 px-1 pt-1 transition-colors">Contact Us</a>
             </nav>
 
             <div className="hidden md:flex items-center">
@@ -89,11 +124,11 @@ export default function Home() {
       <main>
         {/* 2. HERO SECTION */}
         <section className="relative overflow-hidden">
-          <div className="absolute inset-x-0 bottom-0 h-96 bg-gradient-to-t from-indigo-50/50 to-transparent pointer-events-none"></div>
+          <div className="absolute inset-x-0 bottom-0 h-96 bg-gradient-to-t from-indigo-50/50 to-transparent pointer-events-none" />
 
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16 text-center lg:pt-32">
             <div className="inline-flex items-center gap-x-2 bg-indigo-50 border border-indigo-100 rounded-full py-1 px-3 text-xs font-semibold text-indigo-700 mb-6">
-              <span className="flex h-2 w-2 rounded-full bg-indigo-500 animate-pulse"></span>
+              <span className="flex h-2 w-2 rounded-full bg-indigo-500 animate-pulse" />
               Now Live: Next-Gen Platform Built for Speed
             </div>
 
@@ -119,7 +154,6 @@ export default function Home() {
               </a>
             </div>
 
-            {/* Logo Cloud / Trust Bar */}
             <div className="mt-20 border-t border-slate-200 pt-10">
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
                 Trusted by modern teams worldwide
@@ -135,48 +169,38 @@ export default function Home() {
         </section>
 
         {/* 3. CONTACT FORM SECTION */}
-        <section
-          id="contact"
-          className="py-20 bg-white border-t border-slate-200"
-        >
+        <section id="contact" className="py-20 bg-white border-t border-slate-200">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-start">
+
               {/* Contact Copywriting */}
               <div className="max-w-lg">
                 <h2 className="text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">
                   Let's talk about your project
                 </h2>
                 <p className="mt-4 text-lg text-slate-600">
-                  Have questions or ready to get started? Fill out the form,
-                  drop us a line, and our team will get back to you within 24
-                  hours.
+                  Have questions or ready to get started? Fill out the form and
+                  our team will get back to you within 24 hours.
                 </p>
-
                 <div className="mt-8 space-y-4 text-sm text-slate-600">
                   <div className="flex items-center gap-x-3">
-                    <span className="font-semibold text-indigo-600">
-                      Email:
-                    </span>{" "}
+                    <span className="font-semibold text-indigo-600">Email:</span>
                     support@brandname.com
                   </div>
                   <div className="flex items-center gap-x-3">
-                    <span className="font-semibold text-indigo-600">
-                      Hours:
-                    </span>{" "}
-                    Mon - Fri, 9am - 5pm EST
+                    <span className="font-semibold text-indigo-600">Hours:</span>
+                    Mon – Fri, 9am – 5pm EST
                   </div>
                 </div>
               </div>
 
               {/* Contact Form Card */}
               <div className="bg-slate-50 p-8 rounded-2xl border border-slate-200/60 shadow-sm">
+                {/* ✅ FIX 4: form is standalone; Turnstile widget is a sibling div INSIDE
+                    the form — no more wrapping conflict */}
                 <form onSubmit={handleSubmit} className="space-y-5">
-                  {/* Name Input */}
                   <div>
-                    <label
-                      htmlFor="name"
-                      className="block text-sm font-medium text-slate-700 mb-1"
-                    >
+                    <label htmlFor="name" className="block text-sm font-medium text-slate-700 mb-1">
                       Full Name
                     </label>
                     <input
@@ -191,12 +215,8 @@ export default function Home() {
                     />
                   </div>
 
-                  {/* Mobile Input */}
                   <div>
-                    <label
-                      htmlFor="mobile"
-                      className="block text-sm font-medium text-slate-700 mb-1"
-                    >
+                    <label htmlFor="mobile" className="block text-sm font-medium text-slate-700 mb-1">
                       Mobile Number
                     </label>
                     <input
@@ -211,12 +231,8 @@ export default function Home() {
                     />
                   </div>
 
-                  {/* Email Input */}
                   <div>
-                    <label
-                      htmlFor="email"
-                      className="block text-sm font-medium text-slate-700 mb-1"
-                    >
+                    <label htmlFor="email" className="block text-sm font-medium text-slate-700 mb-1">
                       Email Address
                     </label>
                     <input
@@ -231,12 +247,8 @@ export default function Home() {
                     />
                   </div>
 
-                  {/* Message Input */}
                   <div>
-                    <label
-                      htmlFor="message"
-                      className="block text-sm font-medium text-slate-700 mb-1"
-                    >
+                    <label htmlFor="message" className="block text-sm font-medium text-slate-700 mb-1">
                       Message
                     </label>
                     <textarea
@@ -251,7 +263,9 @@ export default function Home() {
                     />
                   </div>
 
-                  {/* Submit Button */}
+                  {/* ✅ FIX 5: Single Turnstile mount point via ref — no duplicate divs */}
+                  <div ref={turnstileWidgetRef} />
+
                   <div className="pt-2">
                     <button
                       type="submit"
@@ -262,10 +276,12 @@ export default function Home() {
                   </div>
                 </form>
               </div>
+
             </div>
           </div>
         </section>
-         <LatestUpdatesSection />
+
+        <LatestUpdates />
       </main>
     </div>
   );

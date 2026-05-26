@@ -1,288 +1,301 @@
+import { useEffect, useState } from "react";
 import axios from "axios";
-import React, { useEffect, useRef, useState } from "react";
-import toast from "react-hot-toast";
-import AIAgent from "../components/AiAgent";
-import LatestUpdates from "../components/LatestUpdates";
 
-export default function Home() {
-  const [formData, setFormData] = useState({
-    name: "",
-    mobile: "",
-    email: "",
-    message: "",
-  });
+// Maps the action verbs enforced by the improved /api/summarize prompt
+// to semantic tag labels and color styles.
+const TAG_RULES = [
+  {
+    // "Shipped", "Launched", "Released", "Deployed"
+    keywords: ["ship", "launch", "release", "deploy", "publish"],
+    label: "Ship",
+    bg: "bg-violet-50 border-violet-200 text-violet-700",
+    dot: "bg-violet-400",
+  },
+  {
+    // "Built", "Created", "Implemented", "Developed", "Integrated"
+    keywords: ["built", "build", "creat", "implement", "develop", "integrat", "add", "feat"],
+    label: "Feat",
+    bg: "bg-emerald-50 border-emerald-200 text-emerald-700",
+    dot: "bg-emerald-400",
+  },
+  {
+    // "Optimized", "Improved", "Reduced", "Boosted", "Cached"
+    keywords: ["optim", "improv", "reduc", "boost", "speed", "cache", "perf", "load"],
+    label: "Perf",
+    bg: "bg-amber-50 border-amber-200 text-amber-700",
+    dot: "bg-amber-400",
+  },
+  {
+    // "Refactored", "Restructured", "Cleaned", "Simplified"
+    keywords: ["refactor", "restructur", "clean", "simplif", "reorg", "migrat"],
+    label: "Refactor",
+    bg: "bg-sky-50 border-sky-200 text-sky-700",
+    dot: "bg-sky-400",
+  },
+  {
+    // "Fixed", "Resolved", "Patched", "Debugged"
+    keywords: ["fix", "resolv", "patch", "debug", "bug", "repair", "correct"],
+    label: "Fix",
+    bg: "bg-rose-50 border-rose-200 text-rose-700",
+    dot: "bg-rose-400",
+  },
+  {
+    // "Designed", "Styled", "Redesigned", "UI", "Layout", "Theme"
+    keywords: ["design", "style", "ui", "layout", "theme", "css", "visual", "redesign"],
+    label: "UI",
+    bg: "bg-fuchsia-50 border-fuchsia-200 text-fuchsia-700",
+    dot: "bg-fuchsia-400",
+  },
+  {
+    // "Documented", "Wrote", "Updated README"
+    keywords: ["doc", "readme", "wrote", "comment", "wiki"],
+    label: "Docs",
+    bg: "bg-slate-100 border-slate-200 text-slate-600",
+    dot: "bg-slate-400",
+  },
+];
 
-  // ✅ FIX 1: Store the token in a ref so it persists across re-renders
-  //    without triggering unnecessary re-renders itself.
-  const captchaTokenRef = useRef("");
-  const turnstileWidgetRef = useRef(null);
+const DEFAULT_TAG = {
+  label: "Update",
+  bg: "bg-slate-100 border-slate-200 text-slate-600",
+  dot: "bg-slate-400",
+};
 
-  // ✅ FIX 2: Use useEffect to render Turnstile AFTER the component mounts,
-  //    not in window.onload (which fires before React even runs).
-  useEffect(() => {
-    const renderTurnstile = () => {
-      if (window.turnstile && turnstileWidgetRef.current) {
-        window.turnstile.render(turnstileWidgetRef.current, {
-          sitekey: import.meta.env.VITE_SITE_KEY, // ✅ Vite env vars need VITE_ prefix
-          callback: (token) => {
-            captchaTokenRef.current = token;
-            console.log("Turnstile token received:", token);
-          },
-          "expired-callback": () => {
-            // Token expires after ~5 min — clear it so user must re-verify
-            captchaTokenRef.current = "";
-            console.warn("Turnstile token expired");
-          },
-          "error-callback": () => {
-            captchaTokenRef.current = "";
-            toast.error("Captcha failed. Please try again.");
-          },
-        });
-      }
-    };
-
-    // If the Turnstile script has already loaded, render immediately.
-    // Otherwise wait for it to load.
-    if (window.turnstile) {
-      renderTurnstile();
-    } else {
-      window.onTurnstileLoad = renderTurnstile; // set in the script tag's onload
+function classifyLine(line) {
+  const lower = line.toLowerCase();
+  for (const rule of TAG_RULES) {
+    if (rule.keywords.some((kw) => lower.includes(kw))) {
+      return { label: rule.label, bg: rule.bg, dot: rule.dot };
     }
-  }, []);
+  }
+  return DEFAULT_TAG;
+}
 
-  const handleInputChange = (e) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
-  };
+function getParsedUpdates(summary) {
+  if (!summary) return [];
+  return summary
+    .split(/\n+/)
+    // Strip bullet chars: •, -, *, numbered lists, and leading/trailing whitespace
+    .map((line) => line.replace(/^[•\-\*]\s*|^\d+\.\s*/, "").trim())
+    .filter((line) => line.length > 10) // skip empty or trivially short lines
+    .map((line) => ({ text: line, type: classifyLine(line) }));
+}
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+export default function LatestUpdatesSection() {
+  const [loading, setLoading] = useState(true);
+  const [summary, setSummary] = useState("");
+  const [error, setError] = useState(false);
+  const [lastFetched, setLastFetched] = useState(null);
 
-    // ✅ FIX 3: Read from the ref, not the reset-on-render plain variable
-    const token = captchaTokenRef.current;
-
-    if (!token) {
-      toast.error("Please complete the captcha before submitting.");
-      return;
-    }
-
+  const fetchUpdates = async () => {
     try {
-      const { data } = await axios.post("/api/contact", {
-        ...formData,
-        token,
+      setLoading(true);
+      setError(false);
+
+      const { data } = await axios.get("/api/github");
+      const result = await axios.post("/api/summarize", {
+        commits: data.commits,
       });
 
-      if (data.success) {
-        toast.success("Message sent successfully!");
-        setFormData({ name: "", mobile: "", email: "", message: "" });
-
-        // Reset Turnstile after a successful submission
-        if (window.turnstile && turnstileWidgetRef.current) {
-          window.turnstile.reset(turnstileWidgetRef.current);
-          captchaTokenRef.current = "";
-        }
-      } else {
-        toast.error(data.message || "Failed to send message.");
-      }
-    } catch (error) {
-      console.error(error);
-      toast.error(
-        error?.response?.data?.message ||
-          "An error occurred. Please try again later."
-      );
+      setSummary(result.data.summary);
+      setLastFetched(new Date());
+    } catch (err) {
+      console.error(err);
+      setError(true);
+    } finally {
+      setLoading(false);
     }
   };
 
+  useEffect(() => {
+    fetchUpdates();
+  }, []);
+
+  const updates = getParsedUpdates(summary);
+
+  const timeAgo = lastFetched
+    ? `${Math.floor((Date.now() - lastFetched) / 60000) || "<1"} min ago`
+    : null;
+
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans antialiased scroll-smooth">
-      <AIAgent />
+    <section className="w-full bg-slate-50 border-t border-b border-slate-200/70 py-16 sm:py-24 font-sans antialiased">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-start">
 
-      {/* 1. HEADER / NAVIGATION */}
-      <header className="bg-white/80 backdrop-blur-md border-b border-slate-200 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex-shrink-0 flex items-center" />
-
-            <nav className="hidden md:flex space-x-8 text-sm font-medium text-slate-600">
-              <a href="#" className="text-indigo-600 px-1 pt-1">Home</a>
-              <a href="#features" className="hover:text-slate-900 px-1 pt-1 transition-colors">Features</a>
-              <a href="#contact" className="hover:text-slate-900 px-1 pt-1 transition-colors">Contact Us</a>
-            </nav>
-
-            <div className="hidden md:flex items-center">
-              <a
-                href="#contact"
-                className="inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 transition-colors shadow-sm"
-              >
-                Get Started
-              </a>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <main>
-        {/* 2. HERO SECTION */}
-        <section className="relative overflow-hidden">
-          <div className="absolute inset-x-0 bottom-0 h-96 bg-gradient-to-t from-indigo-50/50 to-transparent pointer-events-none" />
-
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16 text-center lg:pt-32">
-            <div className="inline-flex items-center gap-x-2 bg-indigo-50 border border-indigo-100 rounded-full py-1 px-3 text-xs font-semibold text-indigo-700 mb-6">
-              <span className="flex h-2 w-2 rounded-full bg-indigo-500 animate-pulse" />
-              Now Live: Next-Gen Platform Built for Speed
+          {/* ── LEFT COLUMN ── */}
+          <div className="lg:col-span-4 space-y-4">
+            <div className="inline-flex items-center gap-x-2 bg-indigo-50 border border-indigo-100 px-3 py-1 rounded-full text-[11px] font-bold tracking-wider text-indigo-700 uppercase">
+              Live Build Feed
             </div>
 
-            <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight text-slate-900 max-w-4xl mx-auto leading-tight">
-              Build beautiful websites{" "}
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-violet-600">
-                faster than ever before
-              </span>
-            </h1>
+            <h2 className="text-3xl font-black tracking-tight text-slate-900 sm:text-4xl">
+              Latest GitHub Updates
+            </h2>
 
-            <p className="mt-6 text-lg sm:text-xl text-slate-600 max-w-2xl mx-auto leading-relaxed">
-              The ultimate utility-first React kit designed to help you launch
-              your next big idea. Clean JSX code, reactive states, and
-              responsive styling.
+            <p className="text-sm text-slate-600 leading-relaxed max-w-md">
+              AI-summarized commit activity pulled directly from the repository.
+              Each entry is classified by type and condensed into clear,
+              impact-focused lines.
             </p>
 
-            <div className="mt-10 flex flex-col sm:flex-row gap-4 justify-center">
-              <a
-                href="#contact"
-                className="inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 transition-all duration-150"
-              >
-                Start Free Trial
-              </a>
+            {/* Meta tags */}
+            <div className="pt-4 flex flex-wrap gap-2">
+              <span className="inline-flex items-center text-xs font-semibold px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-slate-600 shadow-xs">
+                Branch: <span className="text-slate-900 font-bold ml-1">master</span>
+              </span>
+              <span className="inline-flex items-center text-xs font-semibold px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-slate-600 shadow-xs">
+                Status:{" "}
+                <span className={`font-bold ml-1 ${error ? "text-rose-500" : "text-emerald-600"}`}>
+                  {error ? "Error" : "Synced"}
+                </span>
+              </span>
+              {timeAgo && (
+                <span className="inline-flex items-center text-xs font-semibold px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-slate-500 shadow-xs">
+                  Updated {timeAgo}
+                </span>
+              )}
             </div>
 
-            <div className="mt-20 border-t border-slate-200 pt-10">
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Trusted by modern teams worldwide
-              </p>
-              <div className="mt-6 flex flex-wrap justify-center items-center gap-x-12 gap-y-6 opacity-60 text-slate-500 font-bold text-lg">
-                <span>⚡️ ACME Corp</span>
-                <span>⚡️ Globex</span>
-                <span>⚡️ Initech</span>
-                <span>⚡️ Umbrellaco</span>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* 3. CONTACT FORM SECTION */}
-        <section id="contact" className="py-20 bg-white border-t border-slate-200">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-start">
-
-              {/* Contact Copywriting */}
-              <div className="max-w-lg">
-                <h2 className="text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">
-                  Let's talk about your project
-                </h2>
-                <p className="mt-4 text-lg text-slate-600">
-                  Have questions or ready to get started? Fill out the form and
-                  our team will get back to you within 24 hours.
+            {/* Tag legend */}
+            {!loading && !error && updates.length > 0 && (
+              <div className="pt-2 space-y-1.5">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                  Tag Legend
                 </p>
-                <div className="mt-8 space-y-4 text-sm text-slate-600">
-                  <div className="flex items-center gap-x-3">
-                    <span className="font-semibold text-indigo-600">Email:</span>
-                    support@brandname.com
-                  </div>
-                  <div className="flex items-center gap-x-3">
-                    <span className="font-semibold text-indigo-600">Hours:</span>
-                    Mon – Fri, 9am – 5pm EST
+                <div className="flex flex-wrap gap-1.5">
+                  {[...new Map(updates.map((u) => [u.type.label, u.type])).values()].map(
+                    (type) => (
+                      <span
+                        key={type.label}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-md border ${type.bg}`}
+                      >
+                        <span className={`h-1.5 w-1.5 rounded-full ${type.dot}`} />
+                        {type.label}
+                      </span>
+                    )
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ── RIGHT COLUMN ── */}
+          <div className="lg:col-span-8 w-full">
+            <div className="w-full rounded-2xl border border-slate-200/80 bg-white shadow-xs overflow-hidden">
+
+              {/* Header bar */}
+              <div className="px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-800 tracking-wide uppercase">
+                  Repository Operations Log
+                </span>
+                <div className="flex items-center gap-2">
+                  {/* Retry button */}
+                  {error && (
+                    <button
+                      onClick={fetchUpdates}
+                      className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 transition-colors"
+                    >
+                      Retry
+                    </button>
+                  )}
+                  {/* Live indicator */}
+                  <div className="flex h-2 w-2 relative">
+                    <span
+                      className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                        error ? "bg-rose-400" : "bg-emerald-400"
+                      }`}
+                    />
+                    <span
+                      className={`relative inline-flex rounded-full h-2 w-2 ${
+                        error ? "bg-rose-500" : "bg-emerald-500"
+                      }`}
+                    />
                   </div>
                 </div>
               </div>
 
-              {/* Contact Form Card */}
-              <div className="bg-slate-50 p-8 rounded-2xl border border-slate-200/60 shadow-sm">
-                {/* ✅ FIX 4: form is standalone; Turnstile widget is a sibling div INSIDE
-                    the form — no more wrapping conflict */}
-                <form onSubmit={handleSubmit} className="space-y-5">
-                  <div>
-                    <label htmlFor="name" className="block text-sm font-medium text-slate-700 mb-1">
-                      Full Name
-                    </label>
-                    <input
-                      type="text"
-                      id="name"
-                      name="name"
-                      required
-                      value={formData.name}
-                      onChange={handleInputChange}
-                      className="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none sm:text-sm transition-colors"
-                      placeholder="John Doe"
-                    />
+              {/* Feed body */}
+              <div className="p-6">
+                {loading ? (
+                  <div className="space-y-5 animate-pulse">
+                    {[1, 2, 3, 4].map((n) => (
+                      <div
+                        key={n}
+                        className="flex gap-x-4 items-center p-3 border-b border-slate-50 last:border-none"
+                      >
+                        <div className="h-5 w-16 bg-slate-200 rounded-md shrink-0" />
+                        <div className="flex-1 space-y-2">
+                          <div className="h-3 bg-slate-200 rounded w-11/12" />
+                          <div className="h-3 bg-slate-100 rounded w-2/3" />
+                        </div>
+                      </div>
+                    ))}
                   </div>
-
-                  <div>
-                    <label htmlFor="mobile" className="block text-sm font-medium text-slate-700 mb-1">
-                      Mobile Number
-                    </label>
-                    <input
-                      type="tel"
-                      id="mobile"
-                      name="mobile"
-                      required
-                      value={formData.mobile}
-                      onChange={handleInputChange}
-                      className="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none sm:text-sm transition-colors"
-                      placeholder="+1 (555) 000-0000"
-                    />
+                ) : error ? (
+                  <div className="text-center py-12">
+                    <p className="text-sm font-semibold text-rose-500">
+                      Failed to fetch recent changes
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Check API keys or environment connection settings.
+                    </p>
                   </div>
-
-                  <div>
-                    <label htmlFor="email" className="block text-sm font-medium text-slate-700 mb-1">
-                      Email Address
-                    </label>
-                    <input
-                      type="email"
-                      id="email"
-                      name="email"
-                      required
-                      value={formData.email}
-                      onChange={handleInputChange}
-                      className="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none sm:text-sm transition-colors"
-                      placeholder="you@example.com"
-                    />
+                ) : updates.length === 0 ? (
+                  <div className="text-center py-12 text-sm text-slate-500">
+                    No recent commits found on this repository.
                   </div>
+                ) : (
+                  <div className="divide-y divide-slate-100 -mx-2">
+                    {updates.map((item, index) => (
+                      <div
+                        key={index}
+                        className="flex gap-x-4 items-start p-4 hover:bg-slate-50/70 rounded-xl transition-all duration-150 group"
+                      >
+                        {/* Tag badge */}
+                        <span
+                          className={`inline-flex shrink-0 items-center justify-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-md border min-w-[64px] text-center ${item.type.bg}`}
+                        >
+                          <span className={`h-1.5 w-1.5 rounded-full ${item.type.dot}`} />
+                          {item.type.label}
+                        </span>
 
-                  <div>
-                    <label htmlFor="message" className="block text-sm font-medium text-slate-700 mb-1">
-                      Message
-                    </label>
-                    <textarea
-                      id="message"
-                      name="message"
-                      rows="5"
-                      required
-                      value={formData.message}
-                      onChange={handleInputChange}
-                      className="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none sm:text-sm transition-colors resize-none"
-                      placeholder="How can we help you?"
-                    />
+                        {/* Commit summary text */}
+                        <p className="text-sm text-slate-600 leading-relaxed font-medium group-hover:text-slate-900 transition-colors pt-0.5 flex-1">
+                          {item.text}
+                        </p>
+                      </div>
+                    ))}
                   </div>
-
-                  {/* ✅ FIX 5: Single Turnstile mount point via ref — no duplicate divs */}
-                  <div ref={turnstileWidgetRef} />
-
-                  <div className="pt-2">
-                    <button
-                      type="submit"
-                      className="w-full flex justify-center py-3 px-4 border border-transparent text-sm font-medium rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none shadow-md hover:shadow-lg transform hover:-translate-y-0.5 transition-all duration-150 cursor-pointer"
-                    >
-                      Send Message
-                    </button>
-                  </div>
-                </form>
+                )}
               </div>
 
+              {/* Footer strip */}
+              {!loading && !error && updates.length > 0 && (
+                <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs font-semibold text-slate-400">
+                  <div className="flex items-center gap-x-1.5">
+                    <svg
+                      className="h-3.5 w-3.5 text-slate-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth="2"
+                        d="M13 10V3L4 14h7v7l9-11h-7z"
+                      />
+                    </svg>
+                    <span>AI Summary · Automated Integration Active</span>
+                  </div>
+                  <span>{updates.length} items parsed</span>
+                </div>
+              )}
             </div>
           </div>
-        </section>
 
-        <LatestUpdates />
-      </main>
-    </div>
+        </div>
+      </div>
+    </section>
   );
 }
