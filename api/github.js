@@ -1,6 +1,6 @@
 export default async function handler(req, res) {
   try {
-    const repo = "YOUR_GITHUB_USERNAME/YOUR_REPO_NAME";
+    const repo = "mohanibrinfotech-cloud/TEMP-web";
 
     const response = await fetch(
       `https://api.github.com/repos/${repo}/commits?per_page=5`
